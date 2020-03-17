@@ -1,0 +1,619 @@
+import pymysql
+import tushare as ts
+import pandas as pd
+import numpy as np
+import time
+from tqdm import tqdm
+
+#获取上证50（2019年12月31号当天的成分股共33个具有参考价值）\
+def get_sz50():
+    data = pro.stock_basic(exchange='SSE', list_status='L')
+    df = pro.index_weight(index_code ='000016.SH',trade_date ='20191231')
+    ld = []
+    for ts in df.con_code:
+        ld.append(data[data.ts_code == ts].list_date.values[0])
+    df['list_date'] = ld
+    df = df[df.list_date<'20080101']
+    df.index = range(len(df))
+    return df.con_code
+
+#获取数据
+def get_data(ts_code):
+    token = 'e8df84bd1b25a8a2a2ceb7edf7ad41f2c3a1d3ec604bb8abd40321f4'
+    ts.set_token(token)
+    pro = ts.pro_api()
+    ts_code = ts_code
+    start_date = '20071217'
+    end_date = '20191231'
+    daily_basic = pro.daily_basic(ts_code = ts_code,start_date = start_date,end_date = end_date\
+                                  ,fields='turnover_rate,volume_ratio,pe,pb,ps,ps_ttm')
+    pro_bar = ts.pro_bar(ts_code=ts_code, adj='qfq', start_date=start_date, end_date=end_date,ma = [5,10])
+    df = pd.concat([pro_bar.iloc[:-10,1:],daily_basic.iloc[:-10,1:]],axis = 1,sort=True)
+    if df.isna().any().any():
+        df =df.fillna(0)
+    df.iloc[:,1:] = df.iloc[:,1:].applymap(lambda x:int(x*100)/100)
+    column_name = df.columns
+    column_create =''
+    column_insert ='('
+    for co in column_name:
+        if co =='trade_date':
+            column_create += co.upper()+'_' + ' VARCHAR(100),\n'
+        else:
+            column_create += co.upper()+'_' + ' DOUBLE,\n'
+        column_insert += co.upper()+'_,'
+    column_create += 'PRIMARY KEY (TRADE_DATE_)'
+    column_insert += ')'
+    trade_cal = pro.trade_cal(exchange='SSE', start_date='20080101', end_date=end_date,is_open = '1').cal_date
+    return column_create,column_insert,df,trade_cal
+
+#保存至数据库
+def save_to_datebase(ts_code,column_create,column_insert,df,trade_cal):
+    print('Start saving {}...'.format(ts_code))
+    db = pymysql.connect("localhost","root","root","stock" )
+    cursor = db.cursor()
+    try:
+        cursor.execute('CREATE TABLE {} ({})'.format('SH_'+ts_code[:-3],column_create))
+        print('CREATE TABLE {} SUCCESS'.format('SH_'+ts_code[:-3]))
+    except:
+        print('FAIL TO CREATE TALBE {}'.format('SH_'+ts_code[:-3]))
+    for ix,cal in enumerate(trade_cal):
+#         print(df)
+        data = df[df.trade_date == cal]
+#         print(ix)
+#         print(trade_cal[ix])
+#         print(data)
+        if len(data) == 0:
+            now = ix-1
+            while len(data) == 0:
+                data = df[df.trade_date == trade_cal.values[now]]
+                now -=1
+            data.trade_date = cal
+            data = tuple(data.values[0])
+        else:
+            data = tuple(data.values[0])
+        
+#         print('data',data)
+        try:
+            cursor.execute('INSERT INTO {} {}) VALUES {}'.format('SH_'+ts_code[:-3],column_insert[:-2],data))
+#             print('INSERT INTO {} {}) VALUES {}'.format('SH_'+ts_code[:-3],column_insert[:-2],data))
+            db.commit()
+        except:
+           # 发生错误时回滚
+            print('fail to commit')
+            db.rollback()
+#     data = cursor.fetchone()
+    db.close()
+    print('Saving {} complete...'.format(ts_code))
+
+
+================================================================================
+import pymysql
+from math import ceil
+db = pymysql.connect("localhost","root","root","stock" )
+cursor = db.cursor()
+cursor.execute('SHOW TABLES')
+   # 获取所有记录列表
+results = cursor.fetchall()
+stock_list = [i[0] for i in results]
+cursor.execute('select trade_date_ from {}'.format(stock_list[0]))
+   # 获取所有记录列表
+trade_date = [i[0] for i in cursor.fetchall()]
+mu = 0.9
+print('共计{}个股票,{}个交易日,总共{}个样本'.format(len(stock_list),len(trade_date),len(stock_list)*len(trade_date)))
+print('从{}开始训练之{},共计{}个交易日'.format(trade_date[5],trade_date[ceil(len(trade_date)*mu)],ceil(len(trade_date)*mu)))
+
+
+===================================================================================
+#获取数据
+def get_data(ts_code = '',start_date = '20080101'):
+    import pymysql
+    from math import ceil
+    import pandas as pd
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.preprocessing import MinMaxScaler
+    db = pymysql.connect("localhost","root","root","stock" )
+    cursor = db.cursor()
+    cursor.execute('Select * from {} where trade_date_ > {} limit 5'.format(ts_code,start_date))
+    result = cursor.fetchall()
+    db.close()
+    result = pd.DataFrame(result)
+    result.columns = ['trade_date', 'open', 'high', 'low', 'close', 'pre_close', 'change',\
+       'pct_chg', 'vol', 'amount', 'ma5', 'ma_v_5', 'ma10', 'ma_v_10',\
+       'volume_ratio', 'pe', 'pb', 'ps', 'ps_ttm']   
+    return result
+    ===================================================================================
+    def Return(num):
+    import pymysql
+    from math import ceil
+    import pandas as pd
+    db = pymysql.connect("localhost","root","root","stock" )
+    cursor = db.cursor()
+    data = cursor.execute('select * from {}'.format(stock_list[num]))
+    data = cursor.fetchall()
+    data = pd.DataFrame(data)
+    start = data.iloc[2629,5]
+    end =data.iloc[-10,5]
+    return (end-start)/start,data.iloc[:,7].std()
+        ===================================================================================
+        import random
+import json
+import gym
+from gym import spaces
+import pandas as pd
+import numpy as np
+
+class StockTradingEnv(gym.Env):
+    """A stock trading environment for OpenAI gym"""
+    metadata = {'render.modes': ['human']}
+
+    def __init__(self, ts_code):
+        super(StockTradingEnv, self).__init__()
+        self.ts_code = ts_code
+        self.action_space = spaces.Box(low=0, high=2,shape = (1,),dtype=np.float16)
+        #18个元素+1个是否持仓
+        self.observation_space = spaces.Box(low=-2, high=2, shape=(19,), dtype=np.float16)
+    def _next_observation(self):
+        # Get the stock data points for the last 5 days and scale to between 0-1
+        obs = get_data(ts_code = self.ts_code,start_date = trade_date[self.current_step])
+        import pandas as pd
+        from sklearn.preprocessing import StandardScaler,MinMaxScaler
+        obs.iloc[:,1:6] = StandardScaler().fit_transform(np.log(obs.iloc[:,1:6]))
+        obs.iloc[:,[10,12]] =StandardScaler().fit_transform(np.log(obs.iloc[:,[10,12]]))
+        obs.iloc[:,7:10] = MinMaxScaler().fit_transform(obs.iloc[:,7:10])
+        obs.iloc[:,11] = MinMaxScaler().fit_transform(obs.iloc[:,11:12])
+        obs.iloc[:,13:] = MinMaxScaler().fit_transform(obs.iloc[:,13:])
+        obs = obs.values[:,1:]
+        obs = np.hstack((obs[-1],np.array(1))) if self.shares_held != 0 else np.hstack((obs[-1],np.array(0)))
+        return obs
+
+    def _take_action(self, action):
+        self.current_price = get_data(ts_code = self.ts_code,start_date = trade_date[self.current_step]).close.values[-1]
+        if action < 1:#是否改变当前仓位 <1:改变仓位
+            if self.shares_held != 0:#已经有持仓                
+                self.balance += self.shares_held*self.current_price*(1-self.mu)
+                self.shares_held = 0
+            else:#未有持仓
+                if self.balance >self.current_price *100*(1+self.mu): #最低购买100股
+                    self.shares_held = self.balance//(self.current_price*(1+self.mu))
+                    self.shares_held = self.shares_held // 100 *100#100的整数倍
+                    self.balance -= self.shares_held*self.current_price*(1+self.mu)
+    def step(self, action):
+        # Execute one time step within the environment
+        self._take_action(action)
+#         next_day_close = get_data(ts_code = self.ts_code,start_date = trade_date[self.current_step+5])['close'].values
+        next_day_chg = get_data(ts_code = self.ts_code,start_date = trade_date[self.current_step+3])['pct_chg'].values[-3:]
+#         next_day_chg = get_data(ts_code = self.ts_code,start_date = trade_date[self.current_step+3])['pct_chg'].values[-3:]
+        obs = self._next_observation()
+        done = (self.current_step ==2628)
+        pos_chg = next_day_chg.mean()
+        if self.shares_held != 0 :
+            self.reward = pos_chg*2
+        else:
+            self.reward = 0 if pos_chg >0 else -pos_chg*0.5
+        self.current_step = self.current_step + 1
+        return obs, self.reward, done, {}
+
+    def reset(self,istest = False,target = 1):
+        # Reset the state of the environment to an initial state
+        self.balance = 1000000
+        self.net_worth = 0
+        self.mu = 0.001
+        self.reward = 0
+        self.shares_held = 0
+        self.current_step = 0 if not istest else 2629
+        self.current_price = 0 
+        self.target = target
+        return self._next_observation()
+     
+    def render(self, mode='human', close=False):
+        # Render the environment to the screen
+        profit = (self.balance+self.shares_held*self.current_price)/1000000
+        return profit
+     ===================================================================================================
+     import tensorflow as tf
+import numpy as np
+import gym
+import time
+import os
+from tqdm import tqdm
+
+import tensorflow.contrib as contrib
+tf.reset_default_graph() 
+np.random.seed(0)
+tf.set_random_seed(0)
+os.environ["CUDA_VISIBLE_DEVICES"] = "0" # 选择ID为0的GPU
+#####################  hyper parameters  ####################
+
+MAX_EPISODES = 19
+MAX_EP_STEPS = 2000
+# MAX_EP_STEPS = 1000
+LR_A = 0.01    # learning rate for actor
+LR_C = 0.01    # learning rate for critic
+GAMMA = 0.9    # reward discount
+REPLACEMENT = [
+    dict(name='soft', tau=0.01),
+    dict(name='hard', rep_iter_a=600, rep_iter_c=500)
+][0]            # you can try different target replacement strategies
+MEMORY_CAPACITY = 1000
+BATCH_SIZE = 100
+
+RENDER = False
+OUTPUT_GRAPH = False
+# ENV_NAME = 'Pendulum-v0'
+
+###############################  Actor  ####################################
+
+
+class Actor(object):
+    def __init__(self, sess, action_dim, action_bound, learning_rate, replacement):
+        self.sess = sess
+        self.a_dim = action_dim
+        self.action_bound = action_bound
+        self.lr = learning_rate
+        self.replacement = replacement
+        self.t_replace_counter = 0
+
+        with tf.variable_scope('Actor'):
+            # input s, output a
+            self.a = self._build_net(S, scope='eval_net', trainable=True)
+
+            # input s_, output a, get a_ for critic
+            self.a_ = self._build_net(S_, scope='target_net', trainable=False)
+
+        self.e_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='Actor/eval_net')
+        self.t_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='Actor/target_net')
+
+        if self.replacement['name'] == 'hard':
+            self.t_replace_counter = 0
+            self.hard_replace = [tf.assign(t, e) for t, e in zip(self.t_params, self.e_params)]
+        else:
+            self.soft_replace = [tf.assign(t, (1 - self.replacement['tau']) * t + self.replacement['tau'] * e)
+                                 for t, e in zip(self.t_params, self.e_params)]
+
+    def _build_net(self, s, scope, trainable):
+        with tf.variable_scope(scope):
+            init_w = tf.random_normal_initializer(0., .1)
+            init_b = tf.constant_initializer(.5)
+#             lstm_cell = contrib.rnn.LSTMCell(30)
+#             out, _ = tf.nn.dynamic_rnn(cell=lstm_cell, inputs=s, sequence_length=1,dtype=tf.float32)
+#             out = out.reshape(-1,30)
+#             net = tf.layers.dense(s, 10, activation=tf.nn.tanh,
+#                                   kernel_initializer=init_w, bias_initializer=init_b, name='l1',
+#                                   trainable=trainable)
+            net = tf.layers.dense(s, 30, activation=tf.nn.tanh,
+                                  kernel_initializer=init_w, bias_initializer=init_b, name='l2',
+                                  trainable=trainable)
+            with tf.variable_scope('a'):
+                actions = tf.layers.dense(net, self.a_dim, activation=tf.nn.tanh, kernel_initializer=init_w,
+                                          bias_initializer=init_b, name='a', trainable=trainable)
+                scaled_a = tf.multiply(actions, self.action_bound, name='scaled_a')  # Scale output to -action_bound to action_bound
+        return scaled_a
+
+    def learn(self, s):   # batch update
+        self.sess.run(self.train_op, feed_dict={S: s})
+
+        if self.replacement['name'] == 'soft':
+            self.sess.run(self.soft_replace)
+        else:
+            if self.t_replace_counter % self.replacement['rep_iter_a'] == 0:
+                self.sess.run(self.hard_replace)
+            self.t_replace_counter += 1
+
+    def choose_action(self, s):
+        s = s[np.newaxis, :]    # single state
+        return self.sess.run(self.a, feed_dict={S: s})[0]  # single action
+
+    def add_grad_to_graph(self, a_grads):
+        with tf.variable_scope('policy_grads'):
+            # ys = policy;
+            # xs = policy's parameters;
+            # a_grads = the gradients of the policy to get more Q
+            # tf.gradients will calculate dys/dxs with a initial gradients for ys, so this is dq/da * da/dparams
+            self.policy_grads = tf.gradients(ys=self.a, xs=self.e_params, grad_ys=a_grads)
+
+        with tf.variable_scope('A_train'):
+            opt = tf.train.AdamOptimizer(-self.lr)  # (- learning rate) for ascent policy
+            self.train_op = opt.apply_gradients(zip(self.policy_grads, self.e_params))
+
+
+###############################  Critic  ####################################
+
+class Critic(object):
+    def __init__(self, sess, state_dim, action_dim, learning_rate, gamma, replacement, a, a_):
+        self.sess = sess
+        self.s_dim = state_dim
+        self.a_dim = action_dim
+        self.lr = learning_rate
+        self.gamma = gamma
+        self.replacement = replacement
+
+        with tf.variable_scope('Critic'):
+            # Input (s, a), output q
+            self.a = tf.stop_gradient(a)    # stop critic update flows to actor
+            self.q = self._build_net(S, self.a, 'eval_net', trainable=True)
+
+            # Input (s_, a_), output q_ for q_target
+            self.q_ = self._build_net(S_, a_, 'target_net', trainable=False)    # target_q is based on a_ from Actor's target_net
+
+            self.e_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='Critic/eval_net')
+            self.t_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='Critic/target_net')
+
+        with tf.variable_scope('target_q'):
+            self.target_q = R + self.gamma * self.q_
+
+        with tf.variable_scope('TD_error'):
+            self.loss = tf.reduce_mean(tf.squared_difference(self.target_q, self.q))
+
+        with tf.variable_scope('C_train'):
+            self.train_op = tf.train.AdamOptimizer(self.lr).minimize(self.loss)
+
+        with tf.variable_scope('a_grad'):
+            self.a_grads = tf.gradients(self.q, self.a)[0]   # tensor of gradients of each sample (None, a_dim)
+
+        if self.replacement['name'] == 'hard':
+            self.t_replace_counter = 0
+            self.hard_replacement = [tf.assign(t, e) for t, e in zip(self.t_params, self.e_params)]
+        else:
+            self.soft_replacement = [tf.assign(t, (1 - self.replacement['tau']) * t + self.replacement['tau'] * e)
+                                     for t, e in zip(self.t_params, self.e_params)]
+
+    def _build_net(self, s, a, scope, trainable):
+        with tf.variable_scope(scope):
+            init_w = tf.random_normal_initializer(0., .1)
+            init_b = tf.constant_initializer(.1)
+
+            with tf.variable_scope('l1'):
+                n_l1 = 30
+                n_l2 = 30
+                w1_s = tf.get_variable('w1_s', [self.s_dim, n_l1], initializer=init_w, trainable=trainable)
+                w1_a = tf.get_variable('w1_a', [self.a_dim, n_l1], initializer=init_w, trainable=trainable)
+                b1 = tf.get_variable('b1', [1, n_l1], initializer=init_b, trainable=trainable)
+#                 w1_s = tf.get_variable('w1_s', self.s_dim, initializer=init_w, trainable=trainable)
+#                 w1_a = tf.get_variable('w1_a', self.a_dim, initializer=init_w, trainable=trainable)
+#                 b1 = tf.get_variable('b1', [1, n_l1], initializer=init_b, trainable=trainable)
+                net = tf.nn.tanh(tf.matmul(s, w1_s) + tf.matmul(a, w1_a) + b1)
+#                 w2 = tf.get_variable('w2',[n_l1,n_l2],initializer = init_w,trainable = trainable)
+#                 b2 = tf.get_variable('b2', [1, n_l2], initializer=init_b, trainable=trainable)   
+#                 net = tf.nn.tanh(tf.matmul(net,w2)+b2)
+            with tf.variable_scope('q'):
+                q = tf.layers.dense(net, 1, kernel_initializer=init_w, bias_initializer=init_b, trainable=trainable)   # Q(s,a)
+        return q
+
+    def learn(self, s, a, r, s_):
+        self.sess.run(self.train_op, feed_dict={S: s, self.a: a, R: r, S_: s_})
+        if self.replacement['name'] == 'soft':
+            self.sess.run(self.soft_replacement)
+        else:
+            if self.t_replace_counter % self.replacement['rep_iter_c'] == 0:
+                self.sess.run(self.hard_replacement)
+            self.t_replace_counter += 1
+
+
+#####################  Memory  ####################
+
+class Memory(object):
+    def __init__(self, capacity, dims):
+        self.capacity = capacity
+        self.data = pd.DataFrame({'s':[],'a':[],'r':[],'s_':[]})
+        self.pointer = 0
+
+    def store_transition(self, s, a, r, s_):
+        if self.pointer <= self.capacity:
+            self.data = self.data.append({'s':[s],'a':[a],'r':[r],'s_':[s_]},ignore_index=True)
+        else:
+            index = self.pointer % self.capacity  # replace the old memory with new memory
+            self.data.iloc[index,:] = pd.Series({'s':[s],'a':[a],'r':[r],'s_':[s_]})
+        self.pointer += 1
+
+    def sample(self, n):
+        assert self.pointer >= self.capacity, 'Memory has not been fulfilled'
+        indices = np.random.choice(self.capacity, size=n)
+        return self.data.iloc[indices, :]
+
+over_return = {}
+std = {}
+for num in range(30):
+    tf.reset_default_graph() 
+    np.random.seed(0)
+    tf.set_random_seed(0)
+    print(stock_list[num],'开始训练')
+    env = StockTradingEnv(stock_list[num])
+    state_dim = env.observation_space.shape
+    action_dim = env.action_space.shape
+    action_bound = env.action_space.high
+    # print(action_dim,state_dim)
+    # all placeholder for tf
+    with tf.name_scope('S'):
+        S = tf.placeholder(tf.float32, shape=[None,state_dim[0]], name='s')
+    with tf.name_scope('R'):
+        R = tf.placeholder(tf.float32, [None, 1], name='r')
+    with tf.name_scope('S_'):
+        S_ = tf.placeholder(tf.float32, shape=[None,state_dim[0]], name='s_')
+
+    sess = tf.Session()
+
+    # Create actor and critic.
+    # They are actually connected to each other, details can be seen in tensorboard or in this picture:
+    actor = Actor(sess, action_dim[0], action_bound, LR_A, REPLACEMENT)
+    critic = Critic(sess, state_dim[0], action_dim[0], LR_C, GAMMA, REPLACEMENT, actor.a, actor.a_)
+    actor.add_grad_to_graph(critic.a_grads)
+    sess.run(tf.global_variables_initializer())
+
+    M = Memory(MEMORY_CAPACITY, dims=2 * state_dim[0] + action_dim[0] + 1)
+
+    if OUTPUT_GRAPH:
+        tf.summary.FileWriter("logs/", sess.graph)
+
+    var = 1  # control exploration
+    reward = []
+    net = []
+
+    print('start train...')
+    target = 1
+    for i in range(MAX_EPISODES):
+        s = env.reset(target = target)
+#         s = s.reshape(-1,19)
+        ep_reward = 0
+        done = False
+        t1 = time.time()
+        for j in range(MAX_EP_STEPS):
+            # Add exploration noise
+            a = actor.choose_action(s)
+            a = np.clip(abs(np.random.normal(a, var)), 0, 2)    # add randomness to action selection for exploration
+            s_, r, done, info = env.step(a)
+            M.store_transition(s, a, r/10, s_)
+            if M.pointer > MEMORY_CAPACITY:
+                if j%10 ==0:
+                    var *= .9995   # decay the action randomness
+                b_M = M.sample(BATCH_SIZE)
+                b_s = [i[0] for i in b_M['s']]
+                b_s = np.array(b_s).reshape(-1,19)
+                b_a = [i[0] for i in b_M['a']]
+                b_a = np.array(b_a)
+                b_r = [i[0] for i in b_M['r']]
+                b_r = np.array(b_r).reshape(-1,1)
+                b_s_ = [i[0] for i in b_M['s_']]
+                b_s_ = np.array(b_s_).reshape(-1,19)
+                critic.learn(b_s, b_a, b_r, b_s_)
+                actor.learn(b_s)
+            s = s_
+            ep_reward += r
+    #         print('第%i步'%j,'是否变仓:',a<1,'下一步的奖励:',r,'当前仓位',env.shares_held,'当前现金',env.balance\
+    #               ,'net_worth:',env.render())
+            if j == MAX_EP_STEPS-1:
+    #             print(j,done,env.current_step)
+                print('Episode:', i, ' Reward: %f' % ep_reward, 'Explore: %.2f' % var, 'net_worth:%.2f'%env.render())
+        reward.append(ep_reward)
+        net.append(env.render())
+        target = env.render() if env.render()>target else target
+        print('Running time: ', time.time()-t1)
+    #test
+    ep_reward = 0
+    s = env.reset(istest = True)
+    ret  = []
+    be_re = 1
+    for j in range(2921-2629-10):  
+        a = actor.choose_action(s)
+        a = np.clip(abs(a),0,2)
+        s_, r, done, info = env.step(a)
+    #     print('操作',a<1)
+        s = s_
+        env.render 
+        ep_reward += r
+        ret.append((env.render()-be_re)/be_re)
+        be_re = env.render()
+    ret = np.array(ret)
+    print( 'Test Reward: %f' % ep_reward, 'Explore: %.2f' % var, 'net_worth:%.2f'%env.render())
+    over_return[stock_list[num]] = [env.render()-Return(num)[0]-1,Return(num)[1]-ret.std()]
+    ==============================================================================================
+    import keras
+from keras import Sequential
+from keras.layers import LSTM,Bidirectional,Dropout,BatchNormalization,Flatten,Dense,Activation,Conv1D
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from keras.utils import plot_model
+from sklearn.preprocessing import StandardScaler,MinMaxScaler
+# print(keras.__version__)
+
+#以下代码以601318为例
+"""
+因为lstm输入数据必须为三维数据，因此这部分为改变数据维度
+（672,66）——》（672,3,22）
+3代表的是每次用3天的数据
+22 代表的是每天的数据有22个因子
+"""
+#导入数据并归一化
+time_step = 5
+df = pd.read_csv('601318.csv')
+df.iloc[:,2:7] = StandardScaler().fit_transform(np.log(df.iloc[:,2:7]))
+df.iloc[:,7:] = MinMaxScaler().fit_transform(df.iloc[:,7:])
+y = df.close[:-time_step-1].values
+dff =df.copy(deep=True)
+dff = dff.drop(['close'],axis = 1)
+x = []
+x_ = []
+for i in range(1,len(dff)-time_step):
+    x_.append(dff.iloc[i:i+time_step,[14, 23, 28, 10, 7, 15, 20, 8, 19, 12, 2, 13, 18, 22, 25, 11, 17, 21, 9, 16]].values)
+    x.append(dff.iloc[i:i+time_step,2:].values)
+x = np.array(x)
+x_ = np.array(x_)
+# x = x.reshape(x.shape[0],1,-1)
+# x = x.reshape(x.shape[0],-1)
+# x = StandardScaler().fit_transform(x)
+# x = x.reshape(x.shape[0],time_step,-1)
+# y = StandardScaler().fit_transform(y.reshape(-1,1))
+print('the shape of x is ',x.shape,'the shape of y is ',y.shape)
+
+"""
+这部分为建立LSTM模型模型，模型结构最终会输出的（那张表就是，不要有任何的怀疑，如果要好看一点的话和l我说）
+"""
+#构建模型
+#Bilstm
+batch = 7
+Isplotmodel = True #是否输出模型结构图
+model = Sequential()
+model.add(Dense(10,batch_input_shape=(batch,x.shape[1],x.shape[2]),activation='tanh'))
+model.add(Bidirectional(LSTM(30,stateful=True,return_sequences= False)))
+model.add(Dropout(0.5,))
+model.add(Activation('tanh'))
+model.add(Dense(1))
+print('BiLSTM模型：\n')
+print(model.summary())
+model.compile(loss='mse', optimizer='RMSprop')
+if Isplotmodel:
+    plot_model(model,to_file='./lstm.png')
+#LSTM
+model2 = Sequential()
+model2.add(LSTM(10,batch_input_shape=(batch,x.shape[1],x.shape[2]),stateful=True,activation = 'tanh'))
+model2.add(Dropout(0.1))
+model2.add(Dense(1))
+model2.compile(loss='mse', optimizer='RMSprop')
+print('LSTM\n')
+print(model2.summary())
+#筛选后的BiLSTM
+model3 = Sequential()
+model3.add(Dense(10,batch_input_shape=(batch,x_.shape[1],x_.shape[2]),activation='tanh'))
+model3.add(Bidirectional(LSTM(30,stateful=True,return_sequences= False)))
+model3.add(Dropout(0.1,))
+model3.add(Activation('tanh'))
+model3.add(Dense(1))
+model3.compile(loss='mse', optimizer='RMSprop')
+model3.summary()
+import os
+import tensorflow as tf
+np.random.seed(0)
+tf.set_random_seed(0)
+os.environ["CUDA_VISIBLE_DEVICES"]="0" 
+epochs = 200
+split = int(np.ceil(len(x)/batch*0.9))
+train_x = x[:split*batch]
+train_y = y[:split*batch]
+eval_x = x[split*batch:]
+eval_y = y[split*batch:]
+train_x_ = x_[:split*batch]
+eval_x_ = x_[split*batch:]
+l_h = []
+bi_h = []
+bi_h_ = []
+for i in range(epochs):
+    print('Epoch', i + 1, '/', epochs)
+    model3.fit(train_x_, train_y, batch_size=batch,epochs=1,verbose=1,validation_data=(eval_x_, eval_y),shuffle=False)
+    model2.fit(train_x, train_y, batch_size=batch,epochs=1,verbose=1,validation_data=(eval_x, eval_y),shuffle=False)
+    model.fit(train_x, train_y, batch_size=batch,epochs=1,verbose=1,validation_data=(eval_x, eval_y),shuffle=False)
+    model.reset_states()
+    model2.reset_states()
+    l_h.append(model2.history.history)
+    bi_h.append(model.history.history)
+    bi_h_.append(model3.history.history)
+print('Predicting')
+predicted1 = model.predict(eval_x, batch_size=batch)
+predicted2 = model2.predict(eval_x,batch_size = batch)
+predicted3 = model3.predict(eval_x_,batch_size = batch)
+import matplotlib.pyplot as plt
+plt.plot(range(len(eval_x)),predicted1,'r',label = 'BiLSTM')
+plt.plot(range(len(eval_x)),predicted2,'g',label = 'LSTM')
+plt.plot(range(len(eval_x)),predicted3,'y',label = 'BiLSTM after choose')
+plt.plot(range(len(eval_x)),eval_y,'b',label = 'real_price')
+plt.legend(loc = 'best')
+plt.show()
