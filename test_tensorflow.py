@@ -18,10 +18,11 @@ class StockTradingEnv(gym.Env):
         self.action_space = spaces.Box(low = 0,high=2,shape =(1,),dtype=np.float16)
         self.observation_space = spaces.Box(low = -2,high = 2,shape = (5,19),dtype = np.float16)
         self._db = pymysql.connect('localhost','root','123456','stock')
-        self.cursor = self._db.cursor()
-        self.stock_list,self.trade_date = self.Stock_List_and_Trade_Date()
+        self.cursor = self._db.cursor()#连接到数据库
+        self.stock_list,self.trade_date = self.Stock_List_and_Trade_Date()#获取交易日期和交易标的列表
         self.ts_code = self.stock_list[num]
     def get_data(self,ts_code = '',start_date = '',limit_num = 5):
+        #获取数据 默认是5天的数据
         self.cursor.execute('Select * from {} where trade_date_ > {} limit {}'\
                           .format(ts_code,start_date,limit_num))
         data = self.cursor.fetchall()
@@ -37,7 +38,9 @@ class StockTradingEnv(gym.Env):
         trade_date = [i[0] for i in  self.cursor.fetchall()]
         return stock_list,trade_date
     def _next_observation(self,standard = True):
+        #观察值
         obs = self.get_data(ts_code=self.ts_code, start_date=self.trade_date[self.current_step])
+        #是否标准化
         if standard:
             obs.iloc[:, 1:6] = StandardScaler().fit_transform(np.log(obs.iloc[:, 1:6]))
             obs.iloc[:, [10, 12]] = StandardScaler().fit_transform(np.log(obs.iloc[:, [10, 12]]))
@@ -45,6 +48,7 @@ class StockTradingEnv(gym.Env):
             obs.iloc[:, 11] = MinMaxScaler().fit_transform(obs.iloc[:, 11:12])
             obs.iloc[:, 13:] = MinMaxScaler().fit_transform(obs.iloc[:, 13:])
             obs = obs.values[:, 1:]
+            # 1为持仓 0代表空仓
             if self.shares_held != 0:
                   return obs, np.array([[1]])
             else:
@@ -53,11 +57,14 @@ class StockTradingEnv(gym.Env):
               return obs
     def _take_action(self,action):
         self.current_price = self._next_observation(standard=False)['close'][4]
+        #action <=1 :改变当前仓位情况 action>1：不改变当前持仓情况
         if action <=1:
             if self.shares_held != 0:
+                #将持有股票的全部卖出
                 self.balance += self.shares_held*self.current_price*(1-self.mu)
                 self.shares_held =0
             else:
+                #全额买进股票
                 if self.balance > self.current_price * 100 * (1 + self.mu):  # 最低购买100股
                     self.shares_held = self.balance // (self.current_price * (1 + self.mu))
                     self.shares_held = self.shares_held // 100 * 100  # 100的整数倍
@@ -66,12 +73,12 @@ class StockTradingEnv(gym.Env):
     def step(self,action):
         self._take_action(action)
       # print( self.trade_date,self.current_step)
+        #未来3天的涨跌幅（%）情况
         next_3_date_chg = self.get_data(ts_code=self.ts_code,\
                                     start_date=self.trade_date[self.current_step+3],\
                                     )['pct_chg'].values[-3:]
-        # print(next_3_date_chg)
         s1,s2 = self._next_observation()
-        done = (self.current_step == 2628)
+        done = (self.current_step == 2628)#判断是否结束
         pos_chg = next_3_date_chg.sum()
         if self.shares_held !=0:
               reward = pos_chg
@@ -85,7 +92,7 @@ class StockTradingEnv(gym.Env):
         self.net_worth = 0
         self.mu =0.001
         self.shares_held=0
-        self.current_step = 0 if not istest else 2629
+        self.current_step = 0 if not istest else 2629#训练数据是前2629个交易日 2630之后为测试集
         self.current_price = 0
         return self._next_observation()
 
@@ -123,12 +130,8 @@ class Actor():
         model = keras.models.Model(inputs = [input1,input2],outputs = [output])
         return model
     def choose_action(self,s1,s2):
-        # print(s1.shape,s2.shape)
-        # print(self.eval.summary())?
         s1 = s1.reshape(-1,5,18)
         s2 = s2.reshape(-1,1)
-        # print(s1.shape)
-        # print(self.eval.summary())
         return self.target.predict([s1,s2])[0]
 
     def learn(self,s1,s2,g):
@@ -136,8 +139,8 @@ class Actor():
         with tf.GradientTape() as tape:
             y = self.eval([s1,s2])
             y = tf.cast(y,tf.float64)
-            y = tf.multiply(y,-g)
-        grads = tape.gradient(y,self.eval.variables)
+            y = tf.multiply(y,-g) #dq/da *a
+        grads = tape.gradient(y,self.eval.variables) #dq/da *da/d(\theta)
         grads_and_vars = zip(grads,self.eval.variables)
         opt = tf.keras.optimizers.Adam(lr =self.lr)
         opt.apply_gradients(grads_and_vars)
@@ -150,7 +153,7 @@ class Critic():
         self.lr = learnig_rate
         self.gamma = gamma
         self.tau = tau
-        self.a = actor
+        self.a = actor #Actor.target
         self.q = self._build_net(trainable=True,scope = 'eval')
         self.q_ = self._build_net(trainable =False,scope = 'target')
         self.q_.set_weights(self.q.get_weights())
@@ -165,22 +168,19 @@ class Critic():
                                     trainable=trainable,dropout = 0.5)(Input1)
         hidden1 = tf.keras.layers.Dense(30,trainable=trainable,kernel_initializer=init_w,bias_initializer=init_b)(Input2)
         hidden2 = tf.keras.layers.Dense(30,trainable=trainable,kernel_initializer=init_w,bias_initializer=init_b)(Input3)
-#         lstm_bn = tf.keras.layers.BatchNormalization()(lstm)
         hidden_1_lstm = tf.keras.layers.concatenate([lstm,hidden1],axis = 1)
         hidden_1_lstm = tf.keras.layers.Dense(30,trainable=trainable,kernel_initializer=init_w,bias_initializer=init_b)(hidden_1_lstm)
-        # print(hidden_1_lstm.shape,hidden2.shape)
         net = tf.keras.layers.add([hidden_1_lstm,hidden2])
         q = tf.keras.layers.Dense(1,trainable=trainable,name='q')(net)
         q = tf.keras.activations.tanh(q)
         model = tf.keras.models.Model(inputs=[Input1,Input2,Input3],outputs=[q])
         return model
     def learn(self,s1,s2,a,r,s1_,s2_):
-        # print(s1.shape,s2.shape,a.shape,r.shape.s1_.shape.s2_.shape)
         self.metric.reset_states()
         with tf.GradientTape() as tape:
             pre = self.q([s1,s2,a])
             a_ = self.a.predict([s1_,s2_])
-            y = r+self.gamma*self.q_([s1_,s2_,a_])
+            y = r+self.gamma*self.q_([s1_,s2_,a_]) #y_i = r_i + \gamma * r_{i+1}
             loss = tf.reduce_mean(tf.keras.losses.mean_squared_error(y,pre))
         grads = tape.gradient(loss,self.q.variables)
         grads_and_vars = zip(grads,self.q.variables)
@@ -193,10 +193,11 @@ class Critic():
         a = tf.Variable(a)
         with tf.GradientTape() as tape1:
             y = self.q([s1, s2, a])
-        grades = tape1.gradient(y, a)
+        grades = tape1.gradient(y, a)# dq/da
         return grades
 class Memory():
     def __init__(self,max_store=500):
+        #s1:归一化后的环境数据 s2:持仓情况
         self.s1 = np.empty(shape = (1,5,18))
         self.s2 = np.empty(shape = (1,1))
         self.a = np.empty(shape = (1,1))
@@ -223,6 +224,7 @@ class Memory():
             self.s2_[index,:] = s2_.reshape(1,1)
         self.pointer +=1
     def sample(self,n=64):
+        # n:每批取出的数量
         assert self.pointer >= self.ms,'Memory has not been fullfilled'
         indices = np.random.choice(self.ms,size = n)
         return self.s1[indices,:].astype('float'),self.s2[indices,:].astype('float'),\
@@ -239,9 +241,9 @@ if __name__ == "__main__":
     gamma = 0.9
     tau = 0.01
     actor = Actor(action_dim,action_bound,learning_rate,batch)
-    plot_model(actor.target,'./actor.png',show_shapes = True,show_layer_names = True)
+    plot_model(actor.target,'./actor.png',show_shapes = True,show_layer_names = True) #打印Acotr.target的模型
     critic = Critic(state_dim,action_dim,learning_rate,gamma,tau,actor.target)
-    plot_model(critic.q,'./critic.png',show_shapes = True,show_layer_names = True)
+    plot_model(critic.q,'./critic.png',show_shapes = True,show_layer_names = True) #打印Critic.target的模型
     memory = Memory(max_store=100)
     env = StockTradingEnv()
     max_episodes = 100
@@ -278,6 +280,7 @@ if __name__ == "__main__":
                 print('Episode:', i, ' Reward: %f' % ep_reward, 'Explore: %.2f' % var, 'net_worth:%.2f' % env.render())
                 result.append(env.render())
         print('running time: ',str(time.time()-t1))
+    #画出奖励值的曲线
     plt.plot(range(len(result)),result)
     plt.xlabel('次数')
     plt.ylabel('净值')
