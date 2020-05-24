@@ -5,7 +5,7 @@ import numpy as np
 import time
 from tqdm import tqdm
 
-token = 'e8df84bd1b25a8a2a2ceb7edf7ad41f2c3a1d3ec604bb8abd40321f4'
+token = '填写自己的token'
 ts.set_token(token)
 pro = ts.pro_api()
 # 获取上证50（2019年12月31号当天的成分股共33个具有参考价值）\
